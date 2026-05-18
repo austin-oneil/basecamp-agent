@@ -1,0 +1,5 @@
+config.py
+seen_todos.json
+__pycache__/
+*.pyc
+.idea/
