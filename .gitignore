@@ -5,3 +5,5 @@ __pycache__/
 .idea/
 package/
 lambda_deployment.zip
+clients/
+standards/
