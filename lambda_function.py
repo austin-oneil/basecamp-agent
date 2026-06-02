@@ -41,26 +41,26 @@ def extract_client_code(project_name):
 
 def load_context(category, client_code):
     """Load standards doc, client file, and keyword file from S3."""
-    context = {}
+    ctx = {}
 
     standards = load_s3_file(f"standards/{category}.md")
     if standards:
-        context["standards"] = standards
+        ctx["standards"] = standards
     else:
         print(f"  No standards doc found for category: {category}")
 
     if client_code:
         client = load_s3_file(f"clients/{client_code}.md")
         if client:
-            context["client"] = client
+            ctx["client"] = client
         else:
             print(f"  No client file found for: {client_code}")
 
         keywords = load_s3_file(f"keywords/{client_code}_keywords.md")
         if keywords:
-            context["keywords"] = keywords
+            ctx["keywords"] = keywords
 
-    return context
+    return ctx
 
 # ── Anthropic API ──────────────────────────────────────────────────────────────
 
@@ -107,7 +107,7 @@ available in the context provided, flag it clearly rather than guessing.
 """
 
     payload = json.dumps({
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-sonnet-4-6",
         "max_tokens": 4096,
         "system": system_prompt,
         "messages": [
