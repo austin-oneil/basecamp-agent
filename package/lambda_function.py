@@ -90,21 +90,41 @@ def call_claude(todo, category, context, creds):
 
     user_message = f"""You have been assigned the following task in Basecamp:
 
-**Project:** {todo['project_name']}
-**Task List:** {todo['todolist_title']}
-**Task Title:** {todo['title']}
-**Due Date:** {todo['due_on'] or 'No due date'}
-**Task Category:** {category}
+    Project: {todo['project_name']}
+    Task List: {todo['todolist_title']}
+    Task Title: {todo['title']}
+    Due Date: {todo['due_on'] or 'No due date'}
+    Task Category: {category}
 
-**Task Description:**
-{todo['description'] or 'No additional description provided.'}
+    Task Description:
+    {todo['description'] or 'No additional description provided.'}
 
----
+    ---
 
-Please complete this task to the best of your ability using the standards and client context 
-provided. Produce a complete, ready-to-use output. If you need information that is not 
-available in the context provided, flag it clearly rather than guessing.
-"""
+    FORMATTING RULES — follow these exactly:
+
+    1. Plain text output only. No markdown. No asterisks, no pound signs, no hyphens
+       used as bullets, no underscores. Bold is indicated in the CMS fields themselves,
+       not in your output.
+
+    2. For internal links, write them inline as: [link to /services/page-slug here]
+       Example: "Learn more about our [link to /services/sedation-dentistry here]."
+
+    3. For editorial notes and CMS instructions, write them in square brackets on their
+       own line: [Keep existing header image - no changes needed] or [Reviews widget here]
+       or [Call CTA button here].
+
+    4. Follow the Webflow CMS output format exactly as defined in the client file.
+       Every field must be labeled and separated clearly.
+
+    5. Include FAQPage JSON-LD schema with script tags after the FAQ questions.
+
+    6. Do not summarize or explain what you did. Just produce the structured output.
+
+    Please complete this task using the standards and client context provided.
+    If information needed to complete the task is missing, flag it clearly
+    in square brackets rather than guessing: [MISSING: client phone number]
+    """
 
     payload = json.dumps({
         "model": "claude-sonnet-4-6",
