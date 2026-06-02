@@ -91,7 +91,6 @@ RULES = [
             "review/refresh",
             "beef up content",
             "improve pages",
-            "improve visibility",
             "improve areas served",
             "update copy",
         ]
@@ -108,6 +107,7 @@ RULES = [
             "keyword ranks",
             "tsa notes",
             "research",
+            "improve visibility",
         ]
     ),
 ]
