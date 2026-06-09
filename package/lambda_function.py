@@ -11,7 +11,7 @@ s3 = boto3.client("s3", region_name="us-east-1")
 table = dynamodb.Table("basecamp-seen-todos")
 
 S3_BUCKET = "basecamp-agent-standards-423129721363"
-EMAIL_SIZE_LIMIT = 20000
+EMAIL_SIZE_LIMIT = 8000
 SKIP_CATEGORIES = {"misc"}
 
 # ── Credentials ────────────────────────────────────────────────────────────────
@@ -38,19 +38,14 @@ def extract_client_code(project_name):
     match = re.match(r"^([A-Z]+)\s*-", project_name)
     return match.group(1) if match else None
 
-
 def upload_draft_to_s3(todo, output, creds):
     """Upload full draft to S3 and return a presigned URL valid for 7 days."""
-    import boto3
-
-    # Use dedicated IAM user credentials for long-lived presigned URLs
     s3_client = boto3.client(
         "s3",
         region_name="us-east-1",
         aws_access_key_id=creds.get("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=creds.get("AWS_SECRET_ACCESS_KEY"),
     )
-
     key = f"drafts/{todo['id']}.txt"
     s3_client.put_object(
         Bucket=S3_BUCKET,
@@ -65,10 +60,96 @@ def upload_draft_to_s3(todo, output, creds):
     )
     return url
 
+# ── Page Crawler ───────────────────────────────────────────────────────────────
+
+def find_page_url(todo, client_content):
+    """
+    Try to find a relevant page URL from the client file based on the task title.
+    Looks for URLs in the Core Services section that match keywords in the task title.
+    """
+    title_lower = todo["title"].lower()
+
+    service_hints = {
+        "sedation": "sedation",
+        "implant": "implant",
+        "veneer": "veneer",
+        "invisalign": "invisalign",
+        "whitening": "whitening",
+        "crown": "crown",
+        "emergency": "emergency",
+        "root canal": "root-canal",
+        "extraction": "extraction",
+        "wisdom": "wisdom",
+        "cleaning": "cleaning",
+        "gum": "gum",
+        "cosmetic": "cosmetic",
+        "denture": "denture",
+        "oral surgery": "oral-surgery",
+        "filling": "filling",
+        "bonding": "bonding",
+    }
+
+    matched_hint = None
+    for keyword, hint in service_hints.items():
+        if keyword in title_lower:
+            matched_hint = hint
+            break
+
+    if not matched_hint:
+        return None
+
+    urls = re.findall(r'https?://[^\s\)]+', client_content)
+    for url in urls:
+        if matched_hint in url.lower():
+            return url
+
+    return None
+
+
+def fetch_page_content(url):
+    """Fetch and return plain text content from a URL for SEO auditing."""
+    import urllib.request
+    from html.parser import HTMLParser
+
+    class TextExtractor(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.text = []
+            self.in_skip = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ("script", "style"):
+                self.in_skip = True
+
+        def handle_endtag(self, tag):
+            if tag in ("script", "style"):
+                self.in_skip = False
+
+        def handle_data(self, data):
+            if not self.in_skip:
+                stripped = data.strip()
+                if stripped:
+                    self.text.append(stripped)
+
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "BasecampAgent SEO Auditor"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as response:
+            html = response.read().decode("utf-8", errors="ignore")
+            parser = TextExtractor()
+            parser.feed(html)
+            content = " ".join(parser.text)
+            return content[:5000]
+    except Exception as e:
+        print(f"  Page fetch failed for {url}: {e}")
+        return None
+
 # ── Context Loading ────────────────────────────────────────────────────────────
 
-def load_context(category, client_code):
-    """Load standards doc, client file, and keyword file from S3."""
+def load_context(category, client_code, todo=None):
+    """Load standards doc, client file, keyword file, and current page content."""
     ctx = {}
 
     standards = load_s3_file(f"standards/{category}.md")
@@ -87,6 +168,19 @@ def load_context(category, client_code):
         keywords = load_s3_file(f"keywords/{client_code}_keywords.md")
         if keywords:
             ctx["keywords"] = keywords
+
+    # For copywriting and AEO tasks, find and fetch the relevant page
+    if category in ("copywriting", "aeo") and todo and ctx.get("client"):
+        page_url = find_page_url(todo, ctx["client"])
+        if page_url:
+            print(f"  Fetching current page: {page_url}")
+            page_content = fetch_page_content(page_url)
+            if page_content:
+                ctx["current_page_url"] = page_url
+                ctx["current_page_content"] = page_content
+                print(f"  Page fetched ({len(page_content)} chars)")
+        else:
+            print(f"  No matching page URL found in client file")
 
     return ctx
 
@@ -110,6 +204,12 @@ def call_claude(todo, category, context, creds):
         system_parts.append(
             f"# Target Keywords\n\n{context['keywords']}"
         )
+    if "current_page_url" in context:
+        system_parts.append(
+            f"# Current Page Content (for audit)\n\n"
+            f"URL: {context['current_page_url']}\n\n"
+            f"{context['current_page_content']}"
+        )
 
     system_prompt = "\n\n---\n\n".join(system_parts) if system_parts else (
         "You are an SEO specialist assistant helping complete digital marketing tasks "
@@ -129,6 +229,32 @@ Task Description:
 
 ---
 
+PRE-WRITING INSTRUCTIONS — complete these steps before writing any copy:
+
+If this is a copywriting, AEO, or SEO optimization task and current page content
+has been provided above, begin with a brief audit before writing:
+
+CURRENT PAGE AUDIT
+URL: [url]
+Current Meta Title: [title] — [Pass/Fail: 50-60 chars, keyword near front]
+Current Meta Description: [description] — [Pass/Fail: 140-160 chars, has CTA]
+Current H1: [h1] — [Pass/Fail: includes primary keyword, benefit-led]
+Answer Capsule Under H1: [Present/Missing] — [assessment]
+Primary Keyword Presence: [keyword] — [found in H1/first 100 words/H2/meta: yes/no]
+FAQ Section: [Present/Missing] — [count of questions if present]
+FAQPage Schema: [Present/Missing]
+AEO Readiness Score: [X/10]
+Overall SEO Score: [X/10]
+
+Key Issues Found:
+[List the 3-5 most impactful problems with the current page]
+
+Then proceed to write the full replacement copy addressing all identified issues.
+
+If no current page content was provided, skip the audit and proceed directly to writing.
+
+---
+
 FORMATTING RULES — follow these exactly:
 
 1. Plain text output only. No markdown. No asterisks, no pound signs, no hyphens
@@ -142,8 +268,12 @@ FORMATTING RULES — follow these exactly:
    own line: [Keep existing header image - no changes needed] or [Reviews widget here]
    or [Call CTA button here].
 
-4. Follow the Webflow CMS output format exactly as defined in the client file.
-   Every field must be labeled and separated clearly.
+4. Match the output format to the client's editor type as specified in the client
+   context file:
+   - Classic Editor: full HTML with tags and shortcodes
+   - Gutenberg: block-ready HTML
+   - Elementor / WPBakery: plain text organized by section label
+   - Webflow: output by CMS field name
 
 5. Include FAQPage JSON-LD schema with script tags after the FAQ questions.
 
@@ -151,12 +281,12 @@ FORMATTING RULES — follow these exactly:
    of SEO or marketing task this is and complete it accordingly. State your
    interpretation at the top of the output in square brackets:
    [Interpreted as: copywriting / analysis / technical / etc.]
-   
+
 7. If the task involves multiple pages or items, complete the first one fully
    before moving to the next. Do not attempt to compress or summarize to fit
    everything in. Quality over quantity — one complete page is more useful
    than nine incomplete ones.
-   
+
 8. At the very end of your complete output, on its own line, write exactly:
    [END OF DRAFT]
    This confirms the full output was delivered. Do not write this until you are
@@ -274,27 +404,26 @@ def send_output_email(todo, category, output, creds):
     to_email = creds["NOTIFICATION_EMAIL"]
     subject = f"[Basecamp Agent] Draft Ready: {todo['title'][:50]}"
 
-    # Debug output size
     print(f"  Output length: {len(output)} chars (limit: {EMAIL_SIZE_LIMIT})")
 
-    # If output is too long, upload full version to S3 and truncate for email
+    # Check if output was fully delivered
+    complete = "[END OF DRAFT]" in output
+    if not complete:
+        print(f"  WARNING: Output may be truncated - [END OF DRAFT] marker not found")
+
+    # Always upload to S3 so full draft is always available
     s3_url = None
     display_output = output
+    try:
+        s3_url = upload_draft_to_s3(todo, output, creds)
+        print(f"  Draft uploaded to S3")
+    except Exception as e:
+        print(f"  S3 upload failed ({type(e).__name__}): {e}")
+
+    # Truncate display output for email if needed
     if len(output) > EMAIL_SIZE_LIMIT:
-        try:
-            s3_url = upload_draft_to_s3(todo, output, creds)
-            display_output = output[:EMAIL_SIZE_LIMIT]
-            print(f"  Draft too long, uploaded to S3 successfully")
-        except Exception as e:
-            print(f"  S3 upload failed ({type(e).__name__}): {e}")
-            display_output = output[:EMAIL_SIZE_LIMIT]
-    else:
-        # Always upload to S3 regardless so full draft is always available
-        try:
-            s3_url = upload_draft_to_s3(todo, output, creds)
-            print(f"  Draft uploaded to S3")
-        except Exception as e:
-            print(f"  S3 upload failed ({type(e).__name__}): {e}")
+        display_output = output[:EMAIL_SIZE_LIMIT]
+        print(f"  Email truncated to {EMAIL_SIZE_LIMIT} chars")
 
     # Convert plain text output to HTML
     html_output = ""
@@ -333,20 +462,35 @@ def send_output_email(todo, category, output, creds):
         else:
             html_output += f"<p>{stripped}</p>"
 
-    # S3 banner — always show if we have an S3 URL
-    s3_banner = ""
-    if s3_url:
-        label = "Full draft also saved to S3" if len(output) <= EMAIL_SIZE_LIMIT else "Draft truncated — full version saved to S3"
+    # S3 and completeness banner
+    truncated = len(output) > EMAIL_SIZE_LIMIT
+    if s3_url or not complete:
+        if not complete:
+            banner_bg = "#fdecea"
+            banner_border = "#f5c6cb"
+            banner_color = "#721c24"
+            banner_label = "Warning: output may be incomplete"
+        elif truncated:
+            banner_bg = "#fff8e1"
+            banner_border = "#ffe082"
+            banner_color = "#7a5c00"
+            banner_label = "Draft truncated in email — full version saved to S3"
+        else:
+            banner_bg = "#e8f5e9"
+            banner_border = "#a5d6a7"
+            banner_color = "#1b5e20"
+            banner_label = "Full draft saved to S3"
+
+        s3_link = f'<a href="{s3_url}" style="color:#1a1a1a;font-weight:600;margin-left:8px;">Download full draft →</a><span style="color:#aaa;font-size:11px;margin-left:8px;">(link expires in 7 days)</span>' if s3_url else ""
+
         s3_banner = f"""
-        <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:6px;
-                    padding:14px 18px;margin-bottom:24px;font-size:13px;color:#7a5c00;">
-            <strong>{label}</strong>
-            <a href="{s3_url}" style="color:#1a1a1a;font-weight:600;margin-left:8px;">
-                Download full draft →
-            </a>
-            <span style="color:#aaa;font-size:11px;margin-left:8px;">(link expires in 7 days)</span>
+        <div style="background:{banner_bg};border:1px solid {banner_border};border-radius:6px;
+                    padding:14px 18px;margin-bottom:24px;font-size:13px;color:{banner_color};">
+            <strong>{banner_label}</strong>{s3_link}
         </div>
         """
+    else:
+        s3_banner = ""
 
     html = f"""
 <!DOCTYPE html>
@@ -477,7 +621,7 @@ def lambda_handler(event, context):
                 except Exception as e:
                     print(f"  Email failed: {e}")
             else:
-                context_data = load_context(category, client_code)
+                context_data = load_context(category, client_code, todo=todo)
                 try:
                     output = call_claude(todo, category, context_data, creds)
                     send_output_email(todo, category, output, creds)
