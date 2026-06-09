@@ -38,19 +38,30 @@ def extract_client_code(project_name):
     match = re.match(r"^([A-Z]+)\s*-", project_name)
     return match.group(1) if match else None
 
-def upload_draft_to_s3(todo, output):
+
+def upload_draft_to_s3(todo, output, creds):
     """Upload full draft to S3 and return a presigned URL valid for 7 days."""
+    import boto3
+
+    # Use dedicated IAM user credentials for long-lived presigned URLs
+    s3_client = boto3.client(
+        "s3",
+        region_name="us-east-1",
+        aws_access_key_id=creds.get("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=creds.get("AWS_SECRET_ACCESS_KEY"),
+    )
+
     key = f"drafts/{todo['id']}.txt"
-    s3.put_object(
+    s3_client.put_object(
         Bucket=S3_BUCKET,
         Key=key,
         Body=output.encode("utf-8"),
         ContentType="text/plain",
     )
-    url = s3.generate_presigned_url(
+    url = s3_client.generate_presigned_url(
         "get_object",
         Params={"Bucket": S3_BUCKET, "Key": key},
-        ExpiresIn=604800,
+        ExpiresIn=604800,  # 7 days
     )
     return url
 
@@ -271,7 +282,7 @@ def send_output_email(todo, category, output, creds):
     display_output = output
     if len(output) > EMAIL_SIZE_LIMIT:
         try:
-            s3_url = upload_draft_to_s3(todo, output)
+            s3_url = upload_draft_to_s3(todo, output, creds)
             display_output = output[:EMAIL_SIZE_LIMIT]
             print(f"  Draft too long, uploaded to S3 successfully")
         except Exception as e:
@@ -280,7 +291,7 @@ def send_output_email(todo, category, output, creds):
     else:
         # Always upload to S3 regardless so full draft is always available
         try:
-            s3_url = upload_draft_to_s3(todo, output)
+            s3_url = upload_draft_to_s3(todo, output, creds)
             print(f"  Draft uploaded to S3")
         except Exception as e:
             print(f"  S3 upload failed ({type(e).__name__}): {e}")
@@ -416,62 +427,79 @@ def lambda_handler(event, context):
     print(f"Lambda run: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
     print(f"{'='*50}")
 
-    creds = get_credentials()
-    print("Credentials loaded")
+    # Distributed lock — prevent concurrent executions from double-processing
+    lock_key = "LAMBDA_LOCK"
+    try:
+        table.put_item(
+            Item={"todo_id": lock_key, "seen_at": datetime.utcnow().isoformat()},
+            ConditionExpression="attribute_not_exists(todo_id)"
+        )
+        print("Lock acquired")
+    except Exception:
+        print("Another instance is running. Exiting.")
+        return {"statusCode": 200, "body": "Skipped — lock held by another instance"}
 
-    token = bc.get_access_token(
-        creds["BASECAMP_CLIENT_ID"],
-        creds["BASECAMP_CLIENT_SECRET"],
-        creds["BASECAMP_REFRESH_TOKEN"],
-    )
-    print("Token refreshed OK")
+    try:
+        creds = get_credentials()
+        print("Credentials loaded")
 
-    todos = bc.get_my_todos(
-        token,
-        creds["BASECAMP_ACCOUNT_ID"],
-        creds["BASECAMP_USER_ID"],
-        creds.get("USER_AGENT", "BasecampAgent (agent@example.com)"),
-    )
-    print(f"Total todos assigned to me: {len(todos)}")
+        token = bc.get_access_token(
+            creds["BASECAMP_CLIENT_ID"],
+            creds["BASECAMP_CLIENT_SECRET"],
+            creds["BASECAMP_REFRESH_TOKEN"],
+        )
+        print("Token refreshed OK")
 
-    new_count = 0
-    processed_count = 0
+        todos = bc.get_my_todos(
+            token,
+            creds["BASECAMP_ACCOUNT_ID"],
+            creds["BASECAMP_USER_ID"],
+            creds.get("USER_AGENT", "BasecampAgent (agent@example.com)"),
+        )
+        print(f"Total todos assigned to me: {len(todos)}")
 
-    for todo in todos:
-        if is_seen(todo["id"]):
-            continue
+        new_count = 0
+        processed_count = 0
 
-        category = classify(todo)
-        client_code = extract_client_code(todo["project_name"])
+        for todo in todos:
+            if is_seen(todo["id"]):
+                continue
 
-        print(f"\n  NEW: [{category}] {todo['project_name']} - {todo['title'][:50]}")
+            category = classify(todo)
+            client_code = extract_client_code(todo["project_name"])
 
-        if category in SKIP_CATEGORIES:
-            try:
-                send_notification_email(todo, category, creds)
-                print(f"  Notification email sent")
-            except Exception as e:
-                print(f"  Email failed: {e}")
-        else:
-            context_data = load_context(category, client_code)
-            try:
-                output = call_claude(todo, category, context_data, creds)
-                send_output_email(todo, category, output, creds)
-                print(f"  Draft email sent ({category})")
-                processed_count += 1
-            except Exception as e:
-                print(f"  Claude call failed: {e}")
+            print(f"\n  NEW: [{category}] {todo['project_name']} - {todo['title'][:50]}")
+
+            if category in SKIP_CATEGORIES:
                 try:
                     send_notification_email(todo, category, creds)
-                    print(f"  Fallback notification sent")
-                except Exception as e2:
-                    print(f"  Fallback email also failed: {e2}")
+                    print(f"  Notification email sent")
+                except Exception as e:
+                    print(f"  Email failed: {e}")
+            else:
+                context_data = load_context(category, client_code)
+                try:
+                    output = call_claude(todo, category, context_data, creds)
+                    send_output_email(todo, category, output, creds)
+                    print(f"  Draft email sent ({category})")
+                    processed_count += 1
+                except Exception as e:
+                    print(f"  Claude call failed: {e}")
+                    try:
+                        send_notification_email(todo, category, creds)
+                        print(f"  Fallback notification sent")
+                    except Exception as e2:
+                        print(f"  Fallback email also failed: {e2}")
 
-        mark_seen(todo["id"])
-        new_count += 1
+            mark_seen(todo["id"])
+            new_count += 1
 
-    print(f"\nDone. {new_count} new tasks, {processed_count} drafts generated.")
-    return {
-        "statusCode": 200,
-        "body": f"{new_count} new tasks, {processed_count} drafts generated"
-    }
+        print(f"\nDone. {new_count} new tasks, {processed_count} drafts generated.")
+        return {
+            "statusCode": 200,
+            "body": f"{new_count} new tasks, {processed_count} drafts generated"
+        }
+
+    finally:
+        table.delete_item(Key={"todo_id": lock_key})
+        print("Lock released")
