@@ -11,6 +11,7 @@ s3 = boto3.client("s3", region_name="us-east-1")
 table = dynamodb.Table("basecamp-seen-todos")
 
 S3_BUCKET = "basecamp-agent-standards-423129721363"
+EMAIL_SIZE_LIMIT = 50000
 SKIP_CATEGORIES = {"misc"}
 
 # ── Credentials ────────────────────────────────────────────────────────────────
@@ -36,6 +37,22 @@ def extract_client_code(project_name):
     """Extract client code from project name e.g. 'JG - Jeff Gray' -> 'JG'"""
     match = re.match(r"^([A-Z]+)\s*-", project_name)
     return match.group(1) if match else None
+
+def upload_draft_to_s3(todo, output):
+    """Upload full draft to S3 and return a presigned URL valid for 7 days."""
+    key = f"drafts/{todo['id']}.txt"
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key=key,
+        Body=output.encode("utf-8"),
+        ContentType="text/plain",
+    )
+    url = s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": S3_BUCKET, "Key": key},
+        ExpiresIn=604800,  # 7 days
+    )
+    return url
 
 # ── Context Loading ────────────────────────────────────────────────────────────
 
@@ -236,12 +253,40 @@ def send_output_email(todo, category, output, creds):
     to_email = creds["NOTIFICATION_EMAIL"]
     subject = f"[Basecamp Agent] Draft Ready: {todo['title'][:50]}"
 
-    # Convert plain text output to basic HTML
-    # Bold lines that are all-caps labels like "BASIC INFO", "SEO FIELDS" etc.
-    # Wrap paragraphs, preserve line breaks
+    # If output is too long, upload to S3 and truncate for email
+    s3_url = None
+    display_output = output
+    if len(output) > EMAIL_SIZE_LIMIT:
+        try:
+            s3_url = upload_draft_to_s3(todo, output)
+            display_output = output[:EMAIL_SIZE_LIMIT]
+            print(f"  Draft too long, uploaded to S3: {s3_url[:60]}...")
+        except Exception as e:
+            print(f"  S3 upload failed: {e}")
+            display_output = output[:EMAIL_SIZE_LIMIT]
+
+    # Convert plain text output to HTML
     html_output = ""
-    for line in output.split("\n"):
+    in_script = False
+    script_buffer = ""
+
+    for line in display_output.split("\n"):
         stripped = line.strip()
+
+        if "<script" in stripped:
+            in_script = True
+            script_buffer = stripped + "\n"
+            continue
+
+        if in_script:
+            script_buffer += stripped + "\n"
+            if "</script>" in stripped:
+                in_script = False
+                escaped = script_buffer.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                html_output += f'<pre style="background:#f4f4f4;padding:16px;border-radius:6px;font-size:12px;overflow-x:auto;white-space:pre-wrap;word-break:break-word">{escaped}</pre>'
+                script_buffer = ""
+            continue
+
         if not stripped:
             html_output += "<br>"
         elif stripped.startswith("BOLD:"):
@@ -254,10 +299,22 @@ def send_output_email(todo, category, output, creds):
             html_output += f"<p style='margin-left:16px'>{stripped}</p>"
         elif stripped.startswith("[") and stripped.endswith("]"):
             html_output += f"<p style='color:#888;font-style:italic'>{stripped}</p>"
-        elif stripped.startswith("<script"):
-            html_output += f"<pre style='background:#f4f4f4;padding:12px;border-radius:6px;font-size:12px;overflow-x:auto'>{stripped}</pre>"
         else:
             html_output += f"<p>{stripped}</p>"
+
+    # S3 overflow banner
+    s3_banner = ""
+    if s3_url:
+        s3_banner = f"""
+        <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:6px;
+                    padding:14px 18px;margin-bottom:24px;font-size:13px;color:#7a5c00;">
+            <strong>Draft truncated</strong> — this output exceeded the email size limit.
+            <a href="{s3_url}" style="color:#1a1a1a;font-weight:600;margin-left:8px;">
+                Download full draft from S3 →
+            </a>
+            <span style="color:#aaa;font-size:11px;margin-left:8px;">(link expires in 7 days)</span>
+        </div>
+        """
 
     html = f"""
 <!DOCTYPE html>
@@ -299,11 +356,13 @@ def send_output_email(todo, category, output, creds):
     <span>📅 {todo['due_on'] or 'No due date'}</span>
   </div>
   <hr class="divider">
+  {s3_banner}
   <div class="output">
     {html_output}
   </div>
   <div class="cta">
     <a href="{todo['app_url']}">View in Basecamp →</a>
+    {f'<a href="{s3_url}" style="margin-left:12px;background:#444;color:#fff;text-decoration:none;border-radius:6px;padding:10px 20px;font-size:14px;font-weight:600;">Full Draft (S3) →</a>' if s3_url else ''}
     <p class="notice">Review this draft before publishing. Mark the Basecamp task complete when done.</p>
   </div>
 </div>
@@ -319,12 +378,11 @@ def send_output_email(todo, category, output, creds):
             "Subject": {"Data": subject},
             "Body": {
                 "Html": {"Data": html},
-                "Text": {"Data": output},
+                "Text": {"Data": output[:EMAIL_SIZE_LIMIT] + ("\n\n[Full draft: " + s3_url + "]" if s3_url else "")},
             },
         }
     )
     print(f"  Draft email sent for: {todo['title'][:60]}")
-
 # ── Lambda Handler ─────────────────────────────────────────────────────────────
 
 def lambda_handler(event, context):
