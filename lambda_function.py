@@ -11,7 +11,7 @@ s3 = boto3.client("s3", region_name="us-east-1")
 table = dynamodb.Table("basecamp-seen-todos")
 
 S3_BUCKET = "basecamp-agent-standards-423129721363"
-SKIP_CATEGORIES = {"misc", "unknown", "analysis", "page_creation"}
+SKIP_CATEGORIES = {"misc"}
 
 # ── Credentials ────────────────────────────────────────────────────────────────
 
@@ -119,7 +119,10 @@ def call_claude(todo, category, context, creds):
 
     5. Include FAQPage JSON-LD schema with script tags after the FAQ questions.
 
-    6. Do not summarize or explain what you did. Just produce the structured output.
+    6. If the task category is "unknown", use your best judgment to determine what type
+       of SEO or marketing task this is and complete it accordingly. State your
+       interpretation at the top of the output in square brackets:
+       [Interpreted as: copywriting / analysis / technical / etc.]
 
     Please complete this task using the standards and client context provided.
     If information needed to complete the task is missing, flag it clearly

@@ -93,6 +93,9 @@ RULES = [
             "improve pages",
             "improve areas served",
             "update copy",
+            "refresh struggling",
+            "struggling pages",
+            "optimize",
         ]
     ),
     (
