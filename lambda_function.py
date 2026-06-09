@@ -11,7 +11,7 @@ s3 = boto3.client("s3", region_name="us-east-1")
 table = dynamodb.Table("basecamp-seen-todos")
 
 S3_BUCKET = "basecamp-agent-standards-423129721363"
-EMAIL_SIZE_LIMIT = 50000
+EMAIL_SIZE_LIMIT = 20000
 SKIP_CATEGORIES = {"misc"}
 
 # ── Credentials ────────────────────────────────────────────────────────────────
@@ -260,9 +260,9 @@ def send_output_email(todo, category, output, creds):
         try:
             s3_url = upload_draft_to_s3(todo, output)
             display_output = output[:EMAIL_SIZE_LIMIT]
-            print(f"  Draft too long, uploaded to S3: {s3_url[:60]}...")
+            print(f"  Draft too long ({len(output)} chars), uploaded to S3")
         except Exception as e:
-            print(f"  S3 upload failed: {e}")
+            print(f"  S3 upload failed ({type(e).__name__}): {e}")
             display_output = output[:EMAIL_SIZE_LIMIT]
 
     # Convert plain text output to HTML
