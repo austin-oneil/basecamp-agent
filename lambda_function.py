@@ -50,7 +50,7 @@ def upload_draft_to_s3(todo, output):
     url = s3.generate_presigned_url(
         "get_object",
         Params={"Bucket": S3_BUCKET, "Key": key},
-        ExpiresIn=604800,  # 7 days
+        ExpiresIn=604800,
     )
     return url
 
@@ -107,48 +107,53 @@ def call_claude(todo, category, context, creds):
 
     user_message = f"""You have been assigned the following task in Basecamp:
 
-    Project: {todo['project_name']}
-    Task List: {todo['todolist_title']}
-    Task Title: {todo['title']}
-    Due Date: {todo['due_on'] or 'No due date'}
-    Task Category: {category}
+Project: {todo['project_name']}
+Task List: {todo['todolist_title']}
+Task Title: {todo['title']}
+Due Date: {todo['due_on'] or 'No due date'}
+Task Category: {category}
 
-    Task Description:
-    {todo['description'] or 'No additional description provided.'}
+Task Description:
+{todo['description'] or 'No additional description provided.'}
 
-    ---
+---
 
-    FORMATTING RULES — follow these exactly:
+FORMATTING RULES — follow these exactly:
 
-    1. Plain text output only. No markdown. No asterisks, no pound signs, no hyphens
-       used as bullets, no underscores. Bold is indicated in the CMS fields themselves,
-       not in your output.
+1. Plain text output only. No markdown. No asterisks, no pound signs, no hyphens
+   used as bullets, no underscores. Bold is indicated in the CMS fields themselves,
+   not in your output.
 
-    2. For internal links, write them inline as: [link to /services/page-slug here]
-       Example: "Learn more about our [link to /services/sedation-dentistry here]."
+2. For internal links, write them inline as: [link to /services/page-slug here]
+   Example: "Learn more about our [link to /services/sedation-dentistry here]."
 
-    3. For editorial notes and CMS instructions, write them in square brackets on their
-       own line: [Keep existing header image - no changes needed] or [Reviews widget here]
-       or [Call CTA button here].
+3. For editorial notes and CMS instructions, write them in square brackets on their
+   own line: [Keep existing header image - no changes needed] or [Reviews widget here]
+   or [Call CTA button here].
 
-    4. Follow the Webflow CMS output format exactly as defined in the client file.
-       Every field must be labeled and separated clearly.
+4. Follow the Webflow CMS output format exactly as defined in the client file.
+   Every field must be labeled and separated clearly.
 
-    5. Include FAQPage JSON-LD schema with script tags after the FAQ questions.
+5. Include FAQPage JSON-LD schema with script tags after the FAQ questions.
 
-    6. If the task category is "unknown", use your best judgment to determine what type
-       of SEO or marketing task this is and complete it accordingly. State your
-       interpretation at the top of the output in square brackets:
-       [Interpreted as: copywriting / analysis / technical / etc.]
+6. If the task category is "unknown", use your best judgment to determine what type
+   of SEO or marketing task this is and complete it accordingly. State your
+   interpretation at the top of the output in square brackets:
+   [Interpreted as: copywriting / analysis / technical / etc.]
+   
+7. If the task involves multiple pages or items, complete the first one fully
+   before moving to the next. Do not attempt to compress or summarize to fit
+   everything in. Quality over quantity — one complete page is more useful
+   than nine incomplete ones.
 
-    Please complete this task using the standards and client context provided.
-    If information needed to complete the task is missing, flag it clearly
-    in square brackets rather than guessing: [MISSING: client phone number]
-    """
+Please complete this task using the standards and client context provided.
+If information needed to complete the task is missing, flag it clearly
+in square brackets rather than guessing: [MISSING: client phone number]
+"""
 
     payload = json.dumps({
         "model": "claude-sonnet-4-6",
-        "max_tokens": 4096,
+        "max_tokens": 8192,
         "system": system_prompt,
         "messages": [
             {"role": "user", "content": user_message}
@@ -253,17 +258,27 @@ def send_output_email(todo, category, output, creds):
     to_email = creds["NOTIFICATION_EMAIL"]
     subject = f"[Basecamp Agent] Draft Ready: {todo['title'][:50]}"
 
-    # If output is too long, upload to S3 and truncate for email
+    # Debug output size
+    print(f"  Output length: {len(output)} chars (limit: {EMAIL_SIZE_LIMIT})")
+
+    # If output is too long, upload full version to S3 and truncate for email
     s3_url = None
     display_output = output
     if len(output) > EMAIL_SIZE_LIMIT:
         try:
             s3_url = upload_draft_to_s3(todo, output)
             display_output = output[:EMAIL_SIZE_LIMIT]
-            print(f"  Draft too long ({len(output)} chars), uploaded to S3")
+            print(f"  Draft too long, uploaded to S3 successfully")
         except Exception as e:
             print(f"  S3 upload failed ({type(e).__name__}): {e}")
             display_output = output[:EMAIL_SIZE_LIMIT]
+    else:
+        # Always upload to S3 regardless so full draft is always available
+        try:
+            s3_url = upload_draft_to_s3(todo, output)
+            print(f"  Draft uploaded to S3")
+        except Exception as e:
+            print(f"  S3 upload failed ({type(e).__name__}): {e}")
 
     # Convert plain text output to HTML
     html_output = ""
@@ -302,15 +317,16 @@ def send_output_email(todo, category, output, creds):
         else:
             html_output += f"<p>{stripped}</p>"
 
-    # S3 overflow banner
+    # S3 banner — always show if we have an S3 URL
     s3_banner = ""
     if s3_url:
+        label = "Full draft also saved to S3" if len(output) <= EMAIL_SIZE_LIMIT else "Draft truncated — full version saved to S3"
         s3_banner = f"""
         <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:6px;
                     padding:14px 18px;margin-bottom:24px;font-size:13px;color:#7a5c00;">
-            <strong>Draft truncated</strong> — this output exceeded the email size limit.
+            <strong>{label}</strong>
             <a href="{s3_url}" style="color:#1a1a1a;font-weight:600;margin-left:8px;">
-                Download full draft from S3 →
+                Download full draft →
             </a>
             <span style="color:#aaa;font-size:11px;margin-left:8px;">(link expires in 7 days)</span>
         </div>
@@ -342,6 +358,7 @@ def send_output_email(todo, category, output, creds):
   .cta {{ margin-top: 28px; padding-top: 20px; border-top: 1px solid #efefef; }}
   .cta a {{ background: #1a1a1a; color: #ffffff; text-decoration: none;
              border-radius: 6px; padding: 10px 20px; font-size: 14px; font-weight: 600; }}
+  .cta a + a {{ margin-left: 12px; background: #444; }}
   .notice {{ font-size: 12px; color: #aaa; margin-top: 16px; }}
   .footer {{ text-align: center; font-size: 12px; color: #aaa; margin-top: 32px; }}
 </style>
@@ -362,7 +379,7 @@ def send_output_email(todo, category, output, creds):
   </div>
   <div class="cta">
     <a href="{todo['app_url']}">View in Basecamp →</a>
-    {f'<a href="{s3_url}" style="margin-left:12px;background:#444;color:#fff;text-decoration:none;border-radius:6px;padding:10px 20px;font-size:14px;font-weight:600;">Full Draft (S3) →</a>' if s3_url else ''}
+    {f'<a href="{s3_url}">Full Draft (S3) →</a>' if s3_url else ''}
     <p class="notice">Review this draft before publishing. Mark the Basecamp task complete when done.</p>
   </div>
 </div>
@@ -371,6 +388,8 @@ def send_output_email(todo, category, output, creds):
 </html>
 """
 
+    print(f"  HTML email size: {len(html)} chars")
+
     ses.send_email(
         Source=to_email,
         Destination={"ToAddresses": [to_email]},
@@ -378,11 +397,13 @@ def send_output_email(todo, category, output, creds):
             "Subject": {"Data": subject},
             "Body": {
                 "Html": {"Data": html},
-                "Text": {"Data": output[:EMAIL_SIZE_LIMIT] + ("\n\n[Full draft: " + s3_url + "]" if s3_url else "")},
+                "Text": {"Data": display_output + ("\n\n[Full draft: " + s3_url + "]" if s3_url else "")},
             },
         }
     )
     print(f"  Draft email sent for: {todo['title'][:60]}")
+
+
 # ── Lambda Handler ─────────────────────────────────────────────────────────────
 
 def lambda_handler(event, context):
