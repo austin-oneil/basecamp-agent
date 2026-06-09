@@ -95,7 +95,15 @@ def get_my_todos(token, account_id, user_id, user_agent):
             todolists_url = todoset_data.get("todolists_url")
             if not todolists_url:
                 continue
-            todolists, _ = bc_get(todolists_url, token, user_agent)
+            todolists = []
+            while todolists_url:
+                tl_response = requests.get(todolists_url, headers={
+                    "Authorization": f"Bearer {token}",
+                    "User-Agent": user_agent,
+                })
+                tl_response.raise_for_status()
+                todolists.extend(tl_response.json())
+                todolists_url = tl_response.links.get("next", {}).get("url")
         except Exception as e:
             print(f"  Skipping {project_name}: {e}")
             continue

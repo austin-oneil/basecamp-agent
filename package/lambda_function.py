@@ -165,65 +165,162 @@ def mark_seen(todo_id):
 # ── Email via SES ──────────────────────────────────────────────────────────────
 
 def send_notification_email(todo, category, creds):
-    """Send a simple notification email for tasks the agent doesn't process."""
     ses = boto3.client("ses", region_name="us-east-1")
     to_email = creds["NOTIFICATION_EMAIL"]
     subject = f"[Basecamp Agent] New {category.title()} Task: {todo['title'][:50]}"
-    body = f"""New task assigned to you in Basecamp:
 
-Project:   {todo['project_name']}
-List:      {todo['todolist_title']}
-Title:     {todo['title']}
-Category:  {category}
-Due:       {todo['due_on'] or 'No due date'}
-URL:       {todo['app_url']}
-
-Description:
-{todo['description'] or 'No description provided.'}
-
----
-This task was flagged for your manual review.
-Basecamp Agent did not attempt to complete it automatically.
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background: #f5f5f5; margin: 0; padding: 20px; color: #1a1a1a; }}
+  .card {{ background: #ffffff; border-radius: 8px; max-width: 640px; margin: 0 auto;
+           padding: 32px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }}
+  .badge {{ display: inline-block; background: #f0f0f0; border-radius: 4px;
+            font-size: 12px; font-weight: 600; letter-spacing: 0.05em;
+            padding: 4px 10px; text-transform: uppercase; color: #555; margin-bottom: 20px; }}
+  h2 {{ font-size: 20px; font-weight: 700; margin: 0 0 20px 0; color: #1a1a1a; }}
+  .meta {{ border-top: 1px solid #efefef; border-bottom: 1px solid #efefef;
+           padding: 16px 0; margin: 20px 0; }}
+  .meta-row {{ display: flex; margin-bottom: 8px; font-size: 14px; }}
+  .meta-label {{ font-weight: 600; width: 80px; color: #555; flex-shrink: 0; }}
+  .meta-value {{ color: #1a1a1a; }}
+  .description {{ font-size: 14px; line-height: 1.6; color: #444;
+                  background: #f9f9f9; border-radius: 6px; padding: 16px; margin: 20px 0; }}
+  .cta {{ margin-top: 24px; }}
+  .cta a {{ background: #1a1a1a; color: #ffffff; text-decoration: none;
+             border-radius: 6px; padding: 10px 20px; font-size: 14px; font-weight: 600; }}
+  .footer {{ text-align: center; font-size: 12px; color: #aaa; margin-top: 32px; }}
+  .notice {{ font-size: 13px; color: #888; font-style: italic; margin-top: 16px; }}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="badge">{category}</div>
+  <h2>{todo['title']}</h2>
+  <div class="meta">
+    <div class="meta-row"><span class="meta-label">Project</span><span class="meta-value">{todo['project_name']}</span></div>
+    <div class="meta-row"><span class="meta-label">List</span><span class="meta-value">{todo['todolist_title']}</span></div>
+    <div class="meta-row"><span class="meta-label">Due</span><span class="meta-value">{todo['due_on'] or 'No due date'}</span></div>
+  </div>
+  {f'<div class="description">{todo["description"]}</div>' if todo.get("description") else ''}
+  <div class="cta"><a href="{todo['app_url']}">View in Basecamp →</a></div>
+  <p class="notice">This task was flagged for manual review. Basecamp Agent did not attempt to complete it automatically.</p>
+</div>
+<div class="footer">Basecamp Agent</div>
+</body>
+</html>
 """
+
     ses.send_email(
         Source=to_email,
         Destination={"ToAddresses": [to_email]},
         Message={
             "Subject": {"Data": subject},
-            "Body": {"Text": {"Data": body}},
+            "Body": {
+                "Html": {"Data": html},
+                "Text": {"Data": f"{todo['title']}\n\nProject: {todo['project_name']}\nList: {todo['todolist_title']}\nDue: {todo['due_on'] or 'No due date'}\nURL: {todo['app_url']}"},
+            },
         }
     )
 
 
 def send_output_email(todo, category, output, creds):
-    """Send the agent's completed work output via email."""
     ses = boto3.client("ses", region_name="us-east-1")
     to_email = creds["NOTIFICATION_EMAIL"]
-    subject = f"[Basecamp Agent] {category.title()} Draft Ready: {todo['title'][:50]}"
-    body = f"""Basecamp Agent has completed the following task:
+    subject = f"[Basecamp Agent] Draft Ready: {todo['title'][:50]}"
 
-Project:   {todo['project_name']}
-List:      {todo['todolist_title']}
-Title:     {todo['title']}
-Category:  {category}
-Due:       {todo['due_on'] or 'No due date'}
-URL:       {todo['app_url']}
+    # Convert plain text output to basic HTML
+    # Bold lines that are all-caps labels like "BASIC INFO", "SEO FIELDS" etc.
+    # Wrap paragraphs, preserve line breaks
+    html_output = ""
+    for line in output.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            html_output += "<br>"
+        elif stripped.startswith("BOLD:"):
+            html_output += f"<p><strong>{stripped[5:].strip()}</strong></p>"
+        elif stripped.isupper() and len(stripped) > 3:
+            html_output += f"<h3>{stripped}</h3>"
+        elif stripped.startswith("Q:"):
+            html_output += f"<p><strong>{stripped}</strong></p>"
+        elif stripped.startswith("A:"):
+            html_output += f"<p style='margin-left:16px'>{stripped}</p>"
+        elif stripped.startswith("[") and stripped.endswith("]"):
+            html_output += f"<p style='color:#888;font-style:italic'>{stripped}</p>"
+        elif stripped.startswith("<script"):
+            html_output += f"<pre style='background:#f4f4f4;padding:12px;border-radius:6px;font-size:12px;overflow-x:auto'>{stripped}</pre>"
+        else:
+            html_output += f"<p>{stripped}</p>"
 
----
-
-{output}
-
----
-Review this draft before publishing. Mark the Basecamp task complete when done.
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background: #f5f5f5; margin: 0; padding: 20px; color: #1a1a1a; }}
+  .card {{ background: #ffffff; border-radius: 8px; max-width: 720px; margin: 0 auto;
+           padding: 32px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }}
+  .badge {{ display: inline-block; background: #d4edda; border-radius: 4px;
+            font-size: 12px; font-weight: 600; letter-spacing: 0.05em;
+            padding: 4px 10px; text-transform: uppercase; color: #276749; margin-bottom: 20px; }}
+  h2 {{ font-size: 20px; font-weight: 700; margin: 0 0 4px 0; color: #1a1a1a; }}
+  h3 {{ font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+        color: #888; margin: 28px 0 8px 0; border-top: 1px solid #efefef; padding-top: 16px; }}
+  .meta {{ font-size: 13px; color: #888; margin-bottom: 24px; }}
+  .meta span {{ margin-right: 16px; }}
+  .divider {{ border: none; border-top: 1px solid #efefef; margin: 24px 0; }}
+  .output {{ font-size: 14px; line-height: 1.7; color: #2a2a2a; }}
+  .output p {{ margin: 0 0 12px 0; }}
+  .output strong {{ color: #1a1a1a; }}
+  .output pre {{ white-space: pre-wrap; word-break: break-word; }}
+  .cta {{ margin-top: 28px; padding-top: 20px; border-top: 1px solid #efefef; }}
+  .cta a {{ background: #1a1a1a; color: #ffffff; text-decoration: none;
+             border-radius: 6px; padding: 10px 20px; font-size: 14px; font-weight: 600; }}
+  .notice {{ font-size: 12px; color: #aaa; margin-top: 16px; }}
+  .footer {{ text-align: center; font-size: 12px; color: #aaa; margin-top: 32px; }}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="badge">Draft Ready — {category}</div>
+  <h2>{todo['title']}</h2>
+  <div class="meta">
+    <span>📁 {todo['project_name']}</span>
+    <span>📋 {todo['todolist_title']}</span>
+    <span>📅 {todo['due_on'] or 'No due date'}</span>
+  </div>
+  <hr class="divider">
+  <div class="output">
+    {html_output}
+  </div>
+  <div class="cta">
+    <a href="{todo['app_url']}">View in Basecamp →</a>
+    <p class="notice">Review this draft before publishing. Mark the Basecamp task complete when done.</p>
+  </div>
+</div>
+<div class="footer">Basecamp Agent</div>
+</body>
+</html>
 """
+
     ses.send_email(
         Source=to_email,
         Destination={"ToAddresses": [to_email]},
         Message={
             "Subject": {"Data": subject},
-            "Body": {"Text": {"Data": body}},
+            "Body": {
+                "Html": {"Data": html},
+                "Text": {"Data": output},
+            },
         }
     )
+    print(f"  Draft email sent for: {todo['title'][:60]}")
 
 # ── Lambda Handler ─────────────────────────────────────────────────────────────
 
