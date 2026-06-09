@@ -145,6 +145,11 @@ FORMATTING RULES — follow these exactly:
    before moving to the next. Do not attempt to compress or summarize to fit
    everything in. Quality over quantity — one complete page is more useful
    than nine incomplete ones.
+   
+8. At the very end of your complete output, on its own line, write exactly:
+   [END OF DRAFT]
+   This confirms the full output was delivered. Do not write this until you are
+   truly finished with all content.
 
 Please complete this task using the standards and client context provided.
 If information needed to complete the task is missing, flag it clearly
