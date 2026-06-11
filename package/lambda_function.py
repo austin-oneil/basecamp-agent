@@ -169,6 +169,15 @@ def load_context(category, client_code, todo=None):
         if keywords:
             ctx["keywords"] = keywords
 
+        # Load visibility/ranking report if available
+        visibility = load_s3_file(f"visibility/{client_code}_visibility.md")
+        if not visibility:
+            # Try CSV fallback
+            visibility = load_s3_file(f"visibility/{client_code}_visibility.csv")
+        if visibility:
+            ctx["visibility"] = visibility
+            print(f"  Visibility report loaded")
+
     # For copywriting and AEO tasks, find and fetch the relevant page
     if category in ("copywriting", "aeo") and todo and ctx.get("client"):
         page_url = find_page_url(todo, ctx["client"])
@@ -203,6 +212,10 @@ def call_claude(todo, category, context, creds):
     if "keywords" in context:
         system_parts.append(
             f"# Target Keywords\n\n{context['keywords']}"
+        )
+    if "visibility" in context:
+        system_parts.append(
+            f"# Keyword Visibility & Ranking Report\n\n{context['visibility']}"
         )
     if "current_page_url" in context:
         system_parts.append(
