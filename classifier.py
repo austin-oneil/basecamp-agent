@@ -111,6 +111,12 @@ RULES = [
             "tsa notes",
             "research",
             "improve visibility",
+            "get all service pages",
+            "list pages",
+            "sort by",
+            "lowest visibility",
+            "most need of optimization",
+            "url list",
         ]
     ),
 ]

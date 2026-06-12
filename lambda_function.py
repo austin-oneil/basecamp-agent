@@ -330,7 +330,7 @@ in square brackets rather than guessing: [MISSING: client phone number]
         method="POST"
     )
 
-    with urllib.request.urlopen(req, timeout=120) as response:
+    with urllib.request.urlopen(req, timeout=240) as response:
         result = json.loads(response.read().decode("utf-8"))
         return result["content"][0]["text"]
 
