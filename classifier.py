@@ -104,6 +104,9 @@ RULES = [
             "keyword research",
             "kw research",
             "keyword gap",
+            "keyword list",
+            "keyword audit",
+            "refresh keyword",
             "marketing analysis",
             "marketing eval",
             "seo report",
@@ -152,6 +155,7 @@ if __name__ == "__main__":
         {"title": "Make sure site speed satisfies speed requirements", "description": ""},
         {"title": "SEO: Create copywriting for the new page", "description": ""},
         {"title": "FOD SEO: Improve visibility for Billerica, Dracut and North Andover", "description": ""},
+        {"title": "PC SEO: Refresh keyword list", "description": ""},
     ]
 
     for todo in test_todos:
